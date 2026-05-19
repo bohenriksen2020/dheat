@@ -12,7 +12,7 @@ Used command:
 
 ```bash
 esptool --port /dev/tty.usbserial-0001 --baud 460800 write_flash 0x1000 ESP32_GENERIC-20260406-v1.28.0.bin
-````
+```
 
 Board/firmware:
 
@@ -248,6 +248,89 @@ mpremote connect /dev/tty.usbserial-0001 reset
 
 ---
 
+## 🏠 Recommended smart-home flow
+
+The lean Matter version of `dheat` should expose measured and calculated values as sensors, while Home Assistant or Homey should own the automation logic.
+
+Recommended Matter sensors:
+
+| Sensor entity | Source | Unit | Purpose |
+| ------------- | ------ | ---- | ------- |
+| Supply temperature | DS18B20 on manifold supply | °C | Main reference temperature |
+| Total return temperature | DS18B20 on manifold total return | °C | Whole-system return temperature |
+| Loop return temperature | DS18B20 on current loop return | °C | Current loop return temperature |
+| System delta temperature | `supply - total_return` | °C | Shows whole-system heat drop |
+| Loop delta temperature | `supply - loop_return` | °C | Main balancing and pump-control signal |
+
+Matter should stay simple and portable:
+
+* Publish numeric sensor values.
+* Avoid custom Matter clusters for recommendations.
+* Keep "open loop", "close loop", and pump decisions in Home Assistant/Homey.
+
+This makes the device useful across hubs and keeps the ESP32 firmware easy to maintain.
+
+### Recommended automation logic
+
+Heating systems react slowly, so automations should use time guards and hysteresis. Do not switch the pump directly on every small delta change.
+
+Example policy:
+
+| Condition | Meaning | Suggested automation |
+| --------- | ------- | -------------------- |
+| Loop delta `< 3°C` for 15 minutes | Very low heat drop / too much flow or little heat demand | Stop pump or reduce run time |
+| Loop delta `5–7°C` for 10 minutes | Balanced loop | Keep current state |
+| Loop delta `> 8°C` for 10 minutes | High heat drop / too little flow or strong demand | Start pump or notify to open loop slightly |
+| Loop delta `> 10°C` for 20 minutes | Persistent high delta | Send alert and check flow |
+
+Add these safety rules before controlling hardware:
+
+* Minimum pump runtime: 10–15 minutes.
+* Minimum pump off-time: 10–15 minutes.
+* Ignore readings until sensors have been stable for a few minutes.
+* Do not automate valve movement unless the actuator position is known.
+* Keep manual override available in the hub.
+
+Example Home Assistant automation:
+
+```yaml
+alias: DHeat start pump on high loop delta
+trigger:
+  - platform: numeric_state
+    entity_id: sensor.dheat_loop_delta_temperature
+    above: 8
+    for: "00:10:00"
+condition:
+  - condition: state
+    entity_id: input_boolean.dheat_manual_override
+    state: "off"
+action:
+  - service: switch.turn_on
+    target:
+      entity_id: switch.floor_heating_pump
+```
+
+Example stop rule:
+
+```yaml
+alias: DHeat stop pump on low loop delta
+trigger:
+  - platform: numeric_state
+    entity_id: sensor.dheat_loop_delta_temperature
+    below: 3
+    for: "00:15:00"
+condition:
+  - condition: state
+    entity_id: input_boolean.dheat_manual_override
+    state: "off"
+action:
+  - service: switch.turn_off
+    target:
+      entity_id: switch.floor_heating_pump
+```
+
+---
+
 ## ⚠️ Notes
 
 * Never close main return
@@ -287,6 +370,3 @@ mpremote connect /dev/tty.usbserial-0001 reset
 * Alerts when ΔT is off
 
 ---
-
-```
-
